@@ -32,6 +32,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
     depends_on:
       postgres:
         condition: service_healthy

@@ -20,8 +20,8 @@ if [[ ! -d "${DEPLOY_DIR}" ]]; then
   exit 1
 fi
 
-if [[ ! -d "${DEPLOY_DIR}/.git" ]]; then
-  echo "deploy target is not a git worktree: ${DEPLOY_DIR}" >&2
+if ! sudo -u "${DEPLOY_APP_USER}" git -C "${DEPLOY_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "deploy target is not a git repository: ${DEPLOY_DIR}" >&2
   exit 1
 fi
 

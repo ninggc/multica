@@ -1,6 +1,12 @@
 # --- Build stage ---
 FROM golang:1.26-alpine AS builder
 
+ARG GOPROXY=https://goproxy.cn,direct
+ARG GOSUMDB=sum.golang.google.cn
+
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
+
 RUN apk add --no-cache git
 
 WORKDIR /src

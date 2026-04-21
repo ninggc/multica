@@ -30,7 +30,8 @@ Add these repository secrets in `ninggc/multica`:
 - `DEPLOY_SSH_PORT`
   - Optional. Default is `22`
 - `DEPLOY_HOST_FINGERPRINT`
-  - Recommended. Current server ED25519 fingerprint:
+  - Optional. The current workflow does not enforce host key fingerprint verification.
+  - If you want to re-enable strict verification later, current server ED25519 fingerprint is:
     `SHA256:9pY+Mtsw27CILLhZx8ezHUf7U+x5RBOzzPe96xT58A0`
 
 ## Optional GitHub Repository Variables

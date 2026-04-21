@@ -52,7 +52,6 @@ jobs:
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ env.DEPLOY_SSH_PORT }}
-          fingerprint: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
           source: multica-deploy-assets.tgz
           target: /tmp/multica-deploy-${{ github.run_id }}
           overwrite: true
@@ -71,7 +70,6 @@ jobs:
           username: ${{ secrets.DEPLOY_SSH_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ env.DEPLOY_SSH_PORT }}
-          fingerprint: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
           envs: DEPLOY_DIR,DEPLOY_APP_USER,DEPLOY_RUN_ID,DEPLOY_SHA,DEPLOY_REPO
           command_timeout: 30m
           script: |

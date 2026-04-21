@@ -1,0 +1,107 @@
+name: Deploy Self-Host
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to deploy
+        required: false
+        default: main
+
+concurrency:
+  group: selfhost-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/home/ubuntu/services/multica' }}
+  DEPLOY_APP_USER: ${{ vars.DEPLOY_APP_USER || 'ubuntu' }}
+  DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT || '22' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Create git bundle
+        run: |
+          git bundle create multica-deploy.bundle HEAD
+          ls -lh multica-deploy.bundle
+
+      - name: Upload bundle to server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ env.DEPLOY_SSH_PORT }}
+          fingerprint: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
+          source: multica-deploy.bundle
+          target: /tmp/multica-deploy-${{ github.run_id }}
+          overwrite: true
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_DIR: ${{ env.DEPLOY_DIR }}
+          DEPLOY_APP_USER: ${{ env.DEPLOY_APP_USER }}
+          DEPLOY_SSH_PORT: ${{ env.DEPLOY_SSH_PORT }}
+          DEPLOY_RUN_ID: ${{ github.run_id }}
+          DEPLOY_SHA: ${{ github.sha }}
+          DEPLOY_REPO: ${{ github.repository }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ env.DEPLOY_SSH_PORT }}
+          fingerprint: ${{ secrets.DEPLOY_HOST_FINGERPRINT }}
+          envs: DEPLOY_DIR,DEPLOY_APP_USER,DEPLOY_RUN_ID,DEPLOY_SHA,DEPLOY_REPO
+          command_timeout: 30m
+          script: |
+            set -eu
+
+            bundle_path="/tmp/multica-deploy-${DEPLOY_RUN_ID}/multica-deploy.bundle"
+            backup_root="/home/${DEPLOY_APP_USER}/multica-deploy-backups"
+            timestamp="$(date +%Y%m%d-%H%M%S)"
+            short_sha="$(printf '%s' "$DEPLOY_SHA" | cut -c1-7)"
+
+            if [ ! -f "$bundle_path" ]; then
+              echo "bundle not found: $bundle_path" >&2
+              exit 1
+            fi
+
+            if [ ! -d "$DEPLOY_DIR/.git" ]; then
+              echo "deploy target is not a git worktree: $DEPLOY_DIR" >&2
+              exit 1
+            fi
+
+            sudo mkdir -p "$backup_root"
+            sudo tar -czf "$backup_root/multica-${timestamp}-${short_sha}.tgz" \
+              --exclude='multica/.git' \
+              -C "$(dirname "$DEPLOY_DIR")" \
+              "$(basename "$DEPLOY_DIR")"
+
+            sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" fetch "$bundle_path" HEAD
+            sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" reset --hard FETCH_HEAD
+            sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" clean -fd -e .env
+            sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" remote set-url origin "git@github.com:${DEPLOY_REPO}.git"
+
+            sudo -u "$DEPLOY_APP_USER" docker compose -f "$DEPLOY_DIR/docker-compose.selfhost.yml" up -d --build
+
+            curl -fsS http://127.0.0.1:8080/health
+            curl -fsSI http://127.0.0.1:3000 >/dev/null
+
+            sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" rev-parse --short HEAD
+            sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" status --short
+            sudo -u "$DEPLOY_APP_USER" docker compose -f "$DEPLOY_DIR/docker-compose.selfhost.yml" ps
+
+            sudo rm -rf "/tmp/multica-deploy-${DEPLOY_RUN_ID}"

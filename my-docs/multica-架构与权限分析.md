@@ -954,6 +954,228 @@ flowchart TD
 - 也已经给 runtime 建立了 `owner_id` 概念
 - 但尚未把 runtime owner 真正纳入 Agent 绑定权限判定
 
+### 11.8 线上案例：双 Agent 对话与停止条件
+
+本节记录一次线上真实 case，用来说明：
+
+- 为什么一个 issue 页面里会出现“两个 agent 在对话”的效果
+- 这个效果底层并不是专门的 `agent A <-> agent B` 会话模型
+- 为什么 `TO-2` 最后没有继续回复
+
+本次排查对象：
+
+- issue：`c9dd573f-6cbd-44dd-a9a6-fc9246adc2b0`
+- title：`MySQL MCP 代码实现`
+- assignee agent：`TO-2`（`5b35d6ff-9f89-4da0-8223-aa9d418ac3e0`）
+- 参与 agent：`TO-2`、`TO`
+- 线上 runtime：
+  - `TO-2` -> `Claude (VM-0-6-ubuntu)`，runtime id `bf532c9c-4e27-45bc-a96d-ec3ad1827a40`
+  - `TO` -> `Claude (LouisdeMacBook-Air.local)`，runtime id `82418d2a-ccc1-4d72-ba00-98c41ba96ddb`
+
+#### 11.8.1 现象
+
+页面上看起来像这样一条链：
+
+1. 用户在 issue 里同时 `@TO` 和 `@TO-2`
+2. `TO` 回答了为什么 `TO-2` 的目录不是 GitHub 仓库目录
+3. `TO-2` 又回复了这条分析
+4. 然后对话停止，`TO-2` 没再继续
+
+这会让人直觉上以为系统存在一个“多 agent 自动接力对话”能力。
+
+实际上不是。当前实现是：
+
+- comment 触发 task
+- task 执行后写回 comment
+- reply 在特定条件下继承父评论中的 agent mentions
+
+也就是说，所谓“agent 在对话”，本质是同一 issue 线程里多次 comment-triggered task 串起来的结果。
+
+#### 11.8.2 线上证据
+
+从生产数据库 `agent_task_queue` 看，这个 issue 上与本次链路相关的 task 如下：
+
+| task_id | agent | trigger_comment_id | status | 说明 |
+|---|---|---|---|---|
+| `4943afdd-...` | `TO-2` | `75267e92-...` | completed | 用户同时 `@TO` 和 `@TO-2` 后触发 |
+| `d11a0dc7-...` | `TO` | `75267e92-...` | completed | 同一条用户评论触发给 `TO` |
+| `08b205b5-...` | `TO-2` | `1911b012-...` | completed | `TO` 的回复又触发了 `TO-2` |
+
+继续往后没有任何：
+
+- `trigger_comment_id = 42ba8cb5-...`
+- 或新的 `TO-2` pending / running task
+
+所以结论非常明确：
+
+- `TO-2` 没有“卡住”
+- runtime 没有离线
+- daemon 没有停止 claim
+- 系统根本没有再为它创建下一轮 task
+
+#### 11.8.3 详细时序图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant API as Backend
+    participant Q as agent_task_queue
+    participant R1 as Runtime TO (Mac)
+    participant R2 as Runtime TO-2 (Ubuntu)
+    participant TO as Agent TO
+    participant TO2 as Agent TO-2
+    participant C as Comment Timeline
+
+    U->>API: 创建评论 75267e92<br/>内容同时 @TO 与 @TO-2
+    API->>C: 写入 comment 75267e92
+    API->>Q: 为 TO 创建 task d11a0dc7
+    API->>Q: 为 TO-2 创建 task 4943afdd
+
+    R1->>Q: claim task d11a0dc7
+    Q-->>R1: 返回 TO 的任务
+    R2->>Q: claim task 4943afdd
+    Q-->>R2: 返回 TO-2 的任务
+
+    R1->>TO: 执行任务
+    TO->>API: 创建评论 1911b012<br/>解释 TO-2 没有先 repo checkout
+    API->>C: 写入 comment 1911b012
+
+    Note over API: 当前评论 1911b012 无显式 mention<br/>但它是 reply，且父评论 75267e92 含 @TO-2
+    API->>Q: 继承父评论 mention<br/>为 TO-2 再创建 task 08b205b5
+
+    R2->>Q: 完成旧任务 4943afdd
+    R2->>Q: claim task 08b205b5
+    Q-->>R2: 返回 TO-2 的新任务
+
+    R2->>TO2: 执行任务
+    TO2->>API: 创建评论 42ba8cb5<br/>回复 TO 的分析
+    API->>C: 写入 comment 42ba8cb5
+
+    Note over API: 42ba8cb5 的直接父评论是 1911b012<br/>而 1911b012 正文里没有 mention token
+    Note over API: 因此这次不会继承出新的 @TO 或 @TO-2
+    API-->>Q: 不创建新 task
+
+    R2->>Q: 完成 task 08b205b5
+    Note over C,Q: 对话效果到此结束
+```
+
+#### 11.8.4 为什么 `TO-2` 会被 `TO` 的回复再次触发
+
+核心原因在 comment mention 的继承规则。
+
+后端在创建评论后会调用 `enqueueMentionedAgentTasks(...)`。它的规则不是“总是看 thread root”，而是：
+
+1. 先解析当前 comment 自己的 mentions
+2. 只有当当前 comment 是 reply，并且当前 comment 完全没有任何 mention 时
+3. 才继承 `parentComment.Content` 里的 mentions
+
+这次线上链路正好满足这个条件：
+
+- `1911b012-...` 是 `TO` 对用户评论 `75267e92-...` 的 reply
+- `1911b012-...` 自己没有 mention
+- 但它的直接父评论 `75267e92-...` 同时包含 `@TO` 和 `@TO-2`
+
+所以系统在 `TO` 的这条回复落库后，又给 `TO-2` 新建了 task `08b205b5-...`。
+
+后端日志也能看到这条证据：
+
+```text
+15:22:31.368 comment created ... comment_id=1911b012-...
+15:22:31.374 mention task enqueued task_id=08b205b5-... agent_id=5b35d6ff-...
+```
+
+#### 11.8.5 为什么 `TO-2` 没有继续回复
+
+停止的根因不是执行失败，而是“没有继续满足下一跳触发条件”。
+
+`TO-2` 的最后一条回复是 comment `42ba8cb5-...`。这条 comment 的直接父评论是 `1911b012-...`，而 `1911b012-...` 的正文中没有 mention token。
+
+所以当系统处理 `42ba8cb5-...` 时：
+
+- 当前评论自身没有 mention
+- 父评论 `1911b012-...` 也没有 mention
+- 因此没有可继承的 agent mention
+- comment author 又是 `agent`，不会走 assignee `on_comment` 自动触发链
+
+最终结果就是：
+
+- `TO-2` 正常完成最后一个 task
+- 但不会再自动创建下一轮 task
+
+这也是为什么页面上会呈现“一来一回之后停止”的效果。
+
+#### 11.8.6 停止条件图
+
+```mermaid
+flowchart TD
+    A["新 comment 写入"] --> B{"author_type == member ?"}
+    B -->|Yes| C["可走 assignee on_comment 触发链"]
+    B -->|No| D["跳过 on_comment 自动触发"]
+
+    C --> E{"comment 是否把话题指向别人?<br/>如 @其他 agent / @all / 成员线程且 agent 未参与"}
+    E -->|Yes| F["不为 assignee 入队"]
+    E -->|No| G["为 assignee agent 入队"]
+
+    D --> H["检查 enqueueMentionedAgentTasks"]
+    G --> H
+
+    H --> I{"当前 comment 是否显式包含 agent mention?"}
+    I -->|Yes| J["为被 mention 的 agent 入队"]
+    I -->|No| K{"这是 reply 吗?"}
+    K -->|No| L["不入队，链路终止"]
+    K -->|Yes| M{"直接父评论是否包含 agent mention?"}
+    M -->|Yes| N["继承父评论 mention 并入队"]
+    M -->|No| L
+```
+
+#### 11.8.7 与前端展示层的关系
+
+前端 issue 详情页会同时显示两类东西：
+
+- 正在运行的 agent task live card
+- issue timeline 中的 activity + comments
+
+因此当两个 agent 分别在同一个 issue 上有活跃 task 或连续评论时，用户看到的就是：
+
+- 顶部出现多个 live card
+- 下方评论流里出现多个 `author_type = agent` 的 comment
+
+组合起来就像“两个 agent 在对话”。
+
+但底层实际模型依然是：
+
+- 单个 issue comment 线程
+- 多个离散 task
+- task 输出回填为 comment
+
+而不是独立的 multi-agent conversation session。
+
+#### 11.8.8 关键代码落点
+
+这次 case 对应的关键后端代码点如下：
+
+| 代码位置 | 作用 |
+|---|---|
+| `server/internal/handler/comment.go` 中 `CreateComment` | comment 落库后决定是否触发 task |
+| `server/internal/handler/comment.go` 中 `enqueueMentionedAgentTasks` | 解析当前 comment / 父评论 mention，为被 mention 的 agent 入队 |
+| `server/internal/service/task.go` 中 `EnqueueTaskForMention` | 为指定 agent 创建 issue task |
+| `server/internal/service/task.go` 中 `CompleteTask` | task 完成后，如 agent 未主动评论则补 comment |
+| `packages/views/issues/components/agent-live-card.tsx` | 前端按 `task_id` 同时展示多个 agent live task |
+| `packages/views/issues/components/issue-detail.tsx` | 在 issue timeline 中混排 agent comments 与 activity |
+
+从架构角度看，这个 case 暴露的不是 bug，而是一个非常具体的产品语义：
+
+- 系统支持“线程里的多 agent 触发链”
+- 但触发链是否继续，严格取决于 comment 级别的 mention 继承规则
+- 当前规则只看“当前 reply 的直接父评论”，不是整个 thread root
+
+如果以后希望形成更稳定的多 agent 协作效果，最值得重新定义的点不是前端渲染，而是：
+
+- reply mention 的继承范围
+- agent comment 是否允许触发下一轮 assignee / mention 链
+- 系统到底要不要支持“自动多 agent loop”
+
 ---
 
 ## 12. 实时事件、安全与治理

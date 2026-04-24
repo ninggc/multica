@@ -1,13 +1,27 @@
 # --- Build stage ---
 FROM golang:1.26-alpine AS builder
 
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG ALL_PROXY=
+ARG NO_PROXY=
+ARG ALPINE_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine
 ARG GOPROXY=https://goproxy.cn,direct
 ARG GOSUMDB=sum.golang.google.cn
 
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV ALL_PROXY=${ALL_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV all_proxy=${ALL_PROXY}
+ENV no_proxy=${NO_PROXY}
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
 
-RUN apk add --no-cache git
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_REPO}|g" /etc/apk/repositories && \
+    apk add --no-cache git
 
 WORKDIR /src
 
@@ -28,7 +42,10 @@ RUN cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/migrate ./cmd/mi
 # --- Runtime stage ---
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata
+ARG ALPINE_REPO=https://mirrors.tuna.tsinghua.edu.cn/alpine
+
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_REPO}|g" /etc/apk/repositories && \
+    apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 

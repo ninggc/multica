@@ -36,6 +36,47 @@
 
 ---
 
+## 核心概念速查
+
+> 讲解时不需要全部展开，但自己心里要清楚每个概念的边界。建议在 Part 1 提到 agent/runtime 时顺带点一下。
+
+| 概念 | 一句话定义 | 和谁相关 |
+|---|---|---|
+| **Workspace** | 团队/项目的隔离容器，所有资源都在 workspace 内 | 顶层容器，包含下面所有概念 |
+| **Agent** | AI 编码队友，有名字、头像、状态，出现在看板上 | 绑定一个 Runtime，拥有多个 Skill，被分配 Issue |
+| **Runtime** | 已注册的计算执行环境（本地机器 or 云端） | 由 Daemon 注册，供 Agent 使用 |
+| **Daemon** | 跑在本地的守护进程（`multica daemon start`） | 检测 agent CLI → 注册 Runtime → 轮询领取 Task |
+| **Issue** | 一个任务单元（bug / feature / task），可分配给人或 agent | 属于 Workspace，可有子 Issue、评论、执行记录 |
+| **Task** | Issue 的一次执行记录（queued → running → completed） | 属于 Issue + Agent + Runtime，产生 TaskMessage 流 |
+| **TaskMessage** | 执行日志的一条消息（thinking / tool_use / text） | 属于 Task，实时推送到前端 |
+| **Skill** | 可复用的能力模板（部署、review、迁移等） | 多对多绑定 Agent，workspace 级共享 |
+| **Project** | Issue 的分组容器（sprint / epic / workstream） | 包含多个 Issue，可设 lead（人或 agent） |
+| **Autopilot** | 定时/触发式自动化（如每日 bug 扫描） | 绑定 Agent，按 cron 创建 Issue 并触发执行 |
+| **Session** | Agent 和用户的持续对话线程（Chat 模式） | 绑定 Agent + 用户，支持多轮对话 |
+| **Comment** | Issue 上的评论，作者可以是人或 agent | 支持线程回复，agent 完成任务后自动评论结果 |
+
+**概念关系一览：**
+
+```
+Workspace（隔离容器）
+├── Agent（AI 队友）── 绑定 → Runtime（执行环境）
+│   ├── 拥有 → Skill（可复用能力）
+│   └── 执行 → Task（Issue 的一次执行）
+│       └── 产生 → TaskMessage（实时执行日志）
+├── Issue（任务单元）── 分配给 → Agent 或 Member
+│   ├── 包含 → Comment（评论 / 状态变更）
+│   └── 关联 → Task（执行记录，可多次）
+├── Project（Issue 分组）
+├── Autopilot（定时自动化）── 触发 → Issue + Task
+├── Session（Chat 对话）
+└── Member（团队成员）
+
+Daemon（本地守护进程）
+└── 注册 → Runtime（每个检测到的 CLI = 1 个 Runtime）
+```
+
+---
+
 ## Part 2 — 技术实现拆解（4 min）
 
 ### 2.1 整体架构（1 min）

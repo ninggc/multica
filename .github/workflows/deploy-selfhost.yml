@@ -42,6 +42,7 @@ jobs:
           mkdir -p deploy-assets/scripts
           cp multica-deploy.bundle deploy-assets/
           cp scripts/selfhost-backup.sh deploy-assets/scripts/
+          cp scripts/selfhost-deploy-remote.sh deploy-assets/scripts/
           tar -czf multica-deploy-assets.tgz -C deploy-assets .
           ls -lh multica-deploy-assets.tgz
 
@@ -81,6 +82,14 @@ jobs:
             -o UserKnownHostsFile=~/.ssh/known_hosts_deploy \
             multica-deploy-assets.tgz \
             "${DEPLOY_SSH_USER}@${DEPLOY_HOST}:/tmp/multica-deploy-${GITHUB_RUN_ID}/multica-deploy-assets.tgz"
+          scp \
+            -P "${DEPLOY_SSH_PORT}" \
+            -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts_deploy \
+            scripts/selfhost-deploy-remote.sh \
+            "${DEPLOY_SSH_USER}@${DEPLOY_HOST}:/tmp/multica-deploy-${GITHUB_RUN_ID}/selfhost-deploy-remote.sh"
 
       - name: Deploy on server
         env:
@@ -101,43 +110,4 @@ jobs:
             -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile=~/.ssh/known_hosts_deploy \
             "${DEPLOY_SSH_USER}@${DEPLOY_HOST}" \
-            "DEPLOY_DIR='${DEPLOY_DIR}' DEPLOY_APP_USER='${DEPLOY_APP_USER}' DEPLOY_RUN_ID='${DEPLOY_RUN_ID}' DEPLOY_SHA='${DEPLOY_SHA}' DEPLOY_REPO='${DEPLOY_REPO}' bash -se" <<'SCRIPT'
-          set -eu
-
-          deploy_tmp="/tmp/multica-deploy-${DEPLOY_RUN_ID}"
-          archive_path="${deploy_tmp}/multica-deploy-assets.tgz"
-          bundle_path="${deploy_tmp}/multica-deploy.bundle"
-          backup_script="${deploy_tmp}/scripts/selfhost-backup.sh"
-
-          if [ ! -f "$archive_path" ]; then
-            echo "deploy archive not found: $archive_path" >&2
-            exit 1
-          fi
-
-          if ! sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            echo "deploy target is not a git repository: $DEPLOY_DIR" >&2
-            exit 1
-          fi
-
-          mkdir -p "${deploy_tmp}/scripts"
-          tar -xzf "$archive_path" -C "$deploy_tmp"
-          chmod +x "$backup_script"
-
-          "$backup_script" "$DEPLOY_DIR" "$DEPLOY_APP_USER" "$DEPLOY_SHA"
-
-          sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" fetch "$bundle_path" HEAD
-          sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" reset --hard FETCH_HEAD
-          sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" clean -fd -e .env
-          sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" remote set-url origin "git@github.com:${DEPLOY_REPO}.git"
-
-          sudo docker compose -f "$DEPLOY_DIR/docker-compose.selfhost.yml" up -d --build
-
-          curl -fsS http://127.0.0.1:8080/health
-          curl -fsSI http://127.0.0.1:3000 >/dev/null
-
-          sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" rev-parse --short HEAD
-          sudo -u "$DEPLOY_APP_USER" git -C "$DEPLOY_DIR" status --short
-          sudo docker compose -f "$DEPLOY_DIR/docker-compose.selfhost.yml" ps
-
-          sudo rm -rf "/tmp/multica-deploy-${DEPLOY_RUN_ID}"
-          SCRIPT
+            "chmod +x /tmp/multica-deploy-${DEPLOY_RUN_ID}/selfhost-deploy-remote.sh && DEPLOY_DIR='${DEPLOY_DIR}' DEPLOY_APP_USER='${DEPLOY_APP_USER}' DEPLOY_RUN_ID='${DEPLOY_RUN_ID}' DEPLOY_SHA='${DEPLOY_SHA}' DEPLOY_REPO='${DEPLOY_REPO}' /tmp/multica-deploy-${DEPLOY_RUN_ID}/selfhost-deploy-remote.sh"

@@ -50,9 +50,9 @@ These defaults already match the current server:
 
 - `louis.ning` can SSH into the server
 - `louis.ning` has passwordless `sudo`
-- `/home/ubuntu/services/multica` exists and is a git worktree
+- `/home/ubuntu/services/multica` may already exist, but it does not need to be a pre-existing git worktree
 - Docker and Docker Compose are available on the server
-- `.env` already exists at `/home/ubuntu/services/multica/.env`
+- If you want to preserve existing configuration, `.env` should already exist at `/home/ubuntu/services/multica/.env`
 
 ## Current Server Mapping
 
